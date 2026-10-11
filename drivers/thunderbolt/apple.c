@@ -99,6 +99,7 @@
 
 #include "nhi.h"
 #include "tb.h"
+#include "tunnel.h"
 
 #define APPLE_CIO_M3_CTRL 0x0c
 #define APPLE_CIO_M3_CTRL_START BIT(1)
@@ -153,6 +154,10 @@ MODULE_PARM_DESC(cable_info_or,
  * @rc_base: ACIO root controller registers
  * @rc_res: ACIO root controller MMIO resource
  * @rc_tunable: Tunable sequence for the ACIO root controller
+ * @pcie_adapter_base: Registers of the PCIe down adapter, if described
+ * @pcie_adapter_tunable: Tunable sequence for the PCIe down adapter
+ * @pcie_np: Root port of the PCIe controller behind the PCIe down adapter
+ * @pcie_adapter: That controller's protocol adapter while a tunnel is active
  * @sram_res: ACIO co-processor SRAM resource
  * @sram_base: ACIO co-processor SRAM
  * @reset: ACIO reset controller
@@ -172,6 +177,11 @@ struct apple_cio {
 	void __iomem *rc_base;
 	struct resource *rc_res;
 	struct apple_tunable *rc_tunable;
+
+	void __iomem *pcie_adapter_base;
+	struct apple_tunable *pcie_adapter_tunable;
+	struct device_node *pcie_np;
+	struct tb_protocol_adapter *pcie_adapter;
 
 	struct resource *sram_res;
 	void __iomem *sram_base;
@@ -465,12 +475,67 @@ static void apple_nhi_ring_configure(struct tb_ring *ring, u32 flags, u32 e2e_fl
 	writel(flags | e2e_flags, options);
 }
 
+/**
+ * apple_cio_pcie_tunnel_down - Tell the PCIe controller that its tunnel is gone
+ * @acio: ACIO complex whose PCIe tunnel was torn down
+ *
+ * Does nothing unless apple_nhi_tunnel_notify() started the controller before.
+ */
+static void apple_cio_pcie_tunnel_down(struct apple_cio *acio)
+{
+	if (!acio->pcie_adapter)
+		return;
+
+	tb_protocol_adapter_deactivate(acio->pcie_adapter);
+	tb_protocol_adapter_put(acio->pcie_adapter);
+	acio->pcie_adapter = NULL;
+}
+
+/*
+ * The PCIe down adapter of the host router does not lead to a device on the
+ * Thunderbolt bus but to a separate PCIe controller (APCIEC in the diagram
+ * above). Its link only trains while a PCIe tunnel is active, and a device
+ * that tunnels nothing but PCIe gives up on USB4 when that link stays down.
+ */
+static void apple_nhi_tunnel_notify(struct tb_tunnel *tunnel, bool active)
+{
+	struct apple_cio *acio = nhi_to_anhi(tunnel->tb->nhi)->acio;
+	struct tb_protocol_adapter *adapter;
+	int ret;
+
+	if (!tb_tunnel_is_pci(tunnel) || !acio->pcie_np)
+		return;
+
+	if (!active) {
+		apple_cio_pcie_tunnel_down(acio);
+		return;
+	}
+
+	if (acio->pcie_adapter)
+		return;
+
+	adapter = tb_protocol_adapter_get(of_fwnode_handle(acio->pcie_np));
+	if (IS_ERR(adapter)) {
+		dev_warn(acio->dev, "PCIe tunnel is up but its controller %pOF is not ready: %pe\n",
+			 acio->pcie_np, adapter);
+		return;
+	}
+
+	/* Kept even if this fails, so that the controller is reset with the tunnel. */
+	acio->pcie_adapter = adapter;
+	ret = tb_protocol_adapter_activate(adapter);
+	if (ret)
+		dev_warn(acio->dev, "PCIe controller %pOF failed to start: %d\n",
+			 acio->pcie_np, ret);
+}
+
 static const struct tb_nhi_ops apple_nhi_ops = {
 	.request_ring_irq = apple_nhi_request_irq,
 	.release_ring_irq = apple_nhi_release_irq,
 	.ring_interrupt_active = apple_nhi_ring_interrupt_active,
 	.ring_interrupt_mask = apple_nhi_ring_interrupt_mask,
 	.ring_configure = apple_nhi_ring_configure,
+	.tunnel_notify = apple_nhi_tunnel_notify,
 };
 
 static const struct tb_nhi_ring_layout apple_nhi_ring_layout = {
@@ -635,6 +700,9 @@ static void apple_nhi_remove(struct platform_device *pdev)
 
 	tb_domain_remove(anhi->tb);
 	wait_for_completion(&anhi->nhi.domain_released);
+
+	/* Stopping a domain leaves its PCIe tunnel alone, but this one is gone with ACIO. */
+	apple_cio_pcie_tunnel_down(anhi->acio);
 }
 
 static const struct of_device_id apple_nhi_match[] = {
@@ -755,6 +823,8 @@ static int apple_cio_start(struct apple_cio *acio)
 	}
 
 	apple_tunable_apply(acio->rc_base, acio->rc_tunable);
+	if (acio->pcie_adapter_base)
+		apple_tunable_apply(acio->pcie_adapter_base, acio->pcie_adapter_tunable);
 
 	/*
 	 * Bring up devices which are part of ACIO and are now accessible by the main SoC
@@ -897,6 +967,69 @@ static int apple_cio_tbt_switch_set(struct typec_thunderbolt_switch_dev *sw,
 	return 0;
 }
 
+static void apple_cio_put_pcie_np(void *data)
+{
+	of_node_put(data);
+}
+
+/**
+ * apple_cio_probe_pcie - Look up the PCIe controller behind the PCIe down adapter
+ * @pdev: ACIO platform device
+ * @acio: ACIO complex
+ *
+ * PCIe tunneling is optional: without an enabled controller in the device tree
+ * the PCIe adapter is left alone, as it was before this was supported.
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+static int apple_cio_probe_pcie(struct platform_device *pdev, struct apple_cio *acio)
+{
+	struct device *dev = &pdev->dev;
+	struct apple_tunable *tunable;
+	struct device_node *np, *host;
+	struct resource *res;
+	bool available;
+	int ret;
+
+	np = of_parse_phandle(acio->np, "apple,tunneled-pcie", 0);
+	if (!np)
+		return 0;
+
+	host = of_get_parent(np);
+	available = host && of_device_is_available(host);
+	of_node_put(host);
+	if (!available) {
+		of_node_put(np);
+		return 0;
+	}
+
+	ret = devm_add_action_or_reset(dev, apple_cio_put_pcie_np, np);
+	if (ret)
+		return ret;
+	acio->pcie_np = np;
+
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "pcie-adapter");
+	if (!res)
+		return 0;
+
+	tunable = devm_apple_tunable_parse(dev, acio->np, "apple,tunable-pcie-adapter", res);
+	if (PTR_ERR_OR_ZERO(tunable) == -ENOENT) {
+		dev_info(dev, "no PCIe adapter tunable from the bootloader\n");
+		return 0;
+	}
+	if (IS_ERR(tunable))
+		return dev_err_probe(dev, PTR_ERR(tunable),
+				     "Unable to load PCIe adapter tunable\n");
+
+	acio->pcie_adapter_base = devm_ioremap_resource(dev, res);
+	if (IS_ERR(acio->pcie_adapter_base))
+		return dev_err_probe(dev, PTR_ERR(acio->pcie_adapter_base),
+				     "Unable to map PCIe adapter regs\n");
+	acio->pcie_adapter_tunable = tunable;
+
+	return 0;
+}
+
 static int apple_cio_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -930,6 +1063,10 @@ static int apple_cio_probe(struct platform_device *pdev)
 		devm_apple_tunable_parse(dev, acio->np, "apple,tunable-rc", acio->rc_res);
 	if (IS_ERR(acio->rc_tunable))
 		return dev_err_probe(dev, PTR_ERR(acio->rc_tunable), "Unable to load rc tunable\n");
+
+	ret = apple_cio_probe_pcie(pdev, acio);
+	if (ret)
+		return ret;
 
 	acio->reset = devm_reset_control_get_exclusive(dev, NULL);
 	if (IS_ERR(acio->reset))
@@ -1040,6 +1177,8 @@ static void __exit apple_cio_exit(void)
 module_init(apple_cio_init);
 module_exit(apple_cio_exit);
 
+/* The PCIe controllers behind the host routers should be there before a tunnel is */
+MODULE_SOFTDEP("pre: pcie-apple");
 MODULE_AUTHOR("Sven Peter <sven@kernel.org>");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Apple Silicon USB4/Thunderbolt driver");
