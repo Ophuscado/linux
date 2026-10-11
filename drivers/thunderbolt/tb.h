@@ -139,6 +139,9 @@ struct tb_switch_tmu {
  * @drom: DROM of the switch (%NULL if not found)
  * @nvm: Pointer to the NVM if the switch has one (%NULL otherwise)
  * @no_nvm_upgrade: Prevent NVM upgrade of this switch
+ * @no_dma_port: Prevent adding the DMA port of this switch
+ * @no_usb3_bw_alloc: Host router does not implement the USB3 bandwidth
+ *		      allocation registers (ADP_USB3_CS_1..4)
  * @safe_mode: The switch is in safe-mode
  * @boot: Whether the switch was already authorized on boot or not
  * @rpm: The switch supports runtime PM
@@ -194,6 +197,8 @@ struct tb_switch {
 	u8 *drom;
 	struct tb_nvm *nvm;
 	bool no_nvm_upgrade;
+	bool no_dma_port;
+	bool no_usb3_bw_alloc;
 	bool safe_mode;
 	bool boot;
 	bool rpm;
@@ -725,11 +730,11 @@ static inline int tb_port_write(struct tb_port *port, const void *buffer,
 			    length);
 }
 
-#define tb_err(tb, fmt, arg...) dev_err(&(tb)->nhi->pdev->dev, fmt, ## arg)
-#define tb_WARN(tb, fmt, arg...) dev_WARN(&(tb)->nhi->pdev->dev, fmt, ## arg)
-#define tb_warn(tb, fmt, arg...) dev_warn(&(tb)->nhi->pdev->dev, fmt, ## arg)
-#define tb_info(tb, fmt, arg...) dev_info(&(tb)->nhi->pdev->dev, fmt, ## arg)
-#define tb_dbg(tb, fmt, arg...) dev_dbg(&(tb)->nhi->pdev->dev, fmt, ## arg)
+#define tb_err(tb, fmt, arg...) dev_err((tb)->nhi->dev, fmt, ## arg)
+#define tb_WARN(tb, fmt, arg...) dev_WARN((tb)->nhi->dev, fmt, ## arg)
+#define tb_warn(tb, fmt, arg...) dev_warn((tb)->nhi->dev, fmt, ## arg)
+#define tb_info(tb, fmt, arg...) dev_info((tb)->nhi->dev, fmt, ## arg)
+#define tb_dbg(tb, fmt, arg...) dev_dbg((tb)->nhi->dev, fmt, ## arg)
 
 #define __TB_SW_PRINT(level, sw, fmt, arg...)           \
 	do {                                            \
@@ -767,6 +772,9 @@ extern const struct device_type usb4_port_device_type;
 
 int tb_domain_init(void);
 void tb_domain_exit(void);
+int tb_protocol_adapter_init(void);
+void tb_protocol_adapter_exit(void);
+
 int tb_xdomain_init(void);
 void tb_xdomain_exit(void);
 
@@ -793,6 +801,7 @@ int tb_domain_disconnect_xdomain_paths(struct tb *tb, struct tb_xdomain *xd,
 				       int transmit_path, int transmit_ring,
 				       int receive_path, int receive_ring);
 int tb_domain_disconnect_all_paths(struct tb *tb);
+int tb_domain_unregister_unplugged_xdomains(struct tb *tb);
 
 static inline struct tb *tb_domain_get(struct tb *tb)
 {
@@ -1263,6 +1272,7 @@ struct tb_xdomain *tb_xdomain_alloc(struct tb *tb, struct device *parent,
 				    const uuid_t *remote_uuid);
 void tb_xdomain_add(struct tb_xdomain *xd);
 void tb_xdomain_remove(struct tb_xdomain *xd);
+void tb_xdomain_unregister(struct tb_xdomain *xd);
 struct tb_xdomain *tb_xdomain_find_by_link_depth(struct tb *tb, u8 link,
 						 u8 depth);
 
@@ -1479,6 +1489,7 @@ int usb4_dp_port_allocate_bandwidth(struct tb_port *port, int bw);
 int usb4_dp_port_requested_bandwidth(struct tb_port *port);
 
 int usb4_pci_port_set_ext_encapsulation(struct tb_port *port, bool enable);
+int usb4_pci_port_ltssm_state(struct tb_port *port);
 
 static inline bool tb_is_usb4_port_device(const struct device *dev)
 {
@@ -1554,6 +1565,14 @@ static inline void tb_service_debugfs_init(struct tb_service *svc) { }
 static inline void tb_service_debugfs_remove(struct tb_service *svc) { }
 static inline void tb_retimer_debugfs_init(struct tb_retimer *rt) { }
 static inline void tb_retimer_debugfs_remove(struct tb_retimer *rt) { }
+#endif
+
+#if IS_REACHABLE(CONFIG_CONFIGFS_FS)
+int tb_configfs_init(void);
+void tb_configfs_exit(void);
+#else
+static inline int tb_configfs_init(void) { return 0; }
+static inline void tb_configfs_exit(void) { }
 #endif
 
 #endif

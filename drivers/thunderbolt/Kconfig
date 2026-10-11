@@ -18,6 +18,10 @@ menuconfig USB4
 
 if USB4
 
+config USB4_CONFIGFS
+	def_tristate USB4
+	depends on CONFIGFS_FS && !(USB4=y && CONFIGFS_FS=m)
+
 config USB4_DEBUGFS_WRITE
 	bool "Enable write by debugfs to configuration spaces (DANGEROUS)"
 	help
@@ -59,5 +63,29 @@ config USB4_DMA_TEST
 
 	  To compile this driver a module, choose M here. The module will be
 	  called thunderbolt_dma_test.
+
+config USB4_STREAM
+	tristate "Stream data over Thunderbolt/USB4 cable"
+	depends on USB4_CONFIGFS
+	help
+	  This adds support for USB4STREAM protocol that allows two
+	  hosts to stream data directly over Thunderbolt/USB4 cable
+	  through /dev/tbstreamX devices.
+
+	  To compile this driver a module, choose M here. The module will be
+	  called thunderbolt_stream.
+
+config USB4_APPLE_SOC
+	tristate "Apple Silicon USB4/Thunderbolt Support"
+	depends on ARCH_APPLE || COMPILE_TEST
+	depends on OF && APPLE_RTKIT
+	depends on TYPEC
+	select APPLE_TUNABLE
+	help
+	  Say Y here to add support for the USB4 and Thunderbolt host
+	  routers found on Apple Silicon machines starting with the M1.
+
+	  To compile the driver as a module, choose M here. The module
+	  will be called thunderbolt_apple.
 
 endif # USB4

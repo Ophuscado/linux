@@ -12,6 +12,7 @@
 #include <linux/ktime.h>
 #include <linux/string_helpers.h>
 
+#include "nhi.h"
 #include "tunnel.h"
 #include "tb.h"
 
@@ -271,16 +272,39 @@ void tb_tunnel_event(struct tb *tb, enum tb_tunnel_event event,
 	kfree(envp[0]);
 }
 
+/*
+ * Tunnels starting at the host router end in one of its own protocol adapters.
+ * Tell the NHI driver about them, for host routers whose adapters lead to
+ * controllers that only work while they know about the tunnel.
+ */
+static void tb_tunnel_notify_nhi(struct tb_tunnel *tunnel, bool active)
+{
+	const struct tb_nhi_ops *ops = tunnel->tb->nhi->ops;
+
+	if (!ops || !ops->tunnel_notify)
+		return;
+	if (!tunnel->src_port || tb_route(tunnel->src_port->sw))
+		return;
+
+	ops->tunnel_notify(tunnel, active);
+}
+
 static inline void tb_tunnel_set_active(struct tb_tunnel *tunnel, bool active)
 {
+	bool was_active = tunnel->state == TB_TUNNEL_ACTIVE;
+
 	if (active) {
 		tunnel->state = TB_TUNNEL_ACTIVE;
 		tb_tunnel_event(tunnel->tb, TB_TUNNEL_ACTIVATED, tunnel->type,
 				tunnel->src_port, tunnel->dst_port);
+		if (!was_active)
+			tb_tunnel_notify_nhi(tunnel, true);
 	} else {
 		tunnel->state = TB_TUNNEL_INACTIVE;
 		tb_tunnel_event(tunnel->tb, TB_TUNNEL_DEACTIVATED, tunnel->type,
 				tunnel->src_port, tunnel->dst_port);
+		if (was_active)
+			tb_tunnel_notify_nhi(tunnel, false);
 	}
 }
 
@@ -288,6 +312,40 @@ static inline void tb_tunnel_changed(struct tb_tunnel *tunnel)
 {
 	tb_tunnel_event(tunnel->tb, TB_TUNNEL_CHANGED, tunnel->type,
 			tunnel->src_port, tunnel->dst_port);
+}
+
+static int tb_pci_port_ltssm_state_detect(struct tb_port *port)
+{
+	ktime_t timeout = ktime_add_ms(ktime_get(), 500);
+
+	do {
+		int ret;
+
+		ret = usb4_pci_port_ltssm_state(port);
+		if (ret < 0)
+			return ret;
+		if (ret == USB4_PCIE_LTSSM_DETECT)
+			return 0;
+
+		fsleep(50);
+	} while (ktime_before(ktime_get(), timeout));
+
+	return -ETIMEDOUT;
+}
+
+static int tb_pci_pre_activate(struct tb_tunnel *tunnel)
+{
+	struct tb_port *down = tunnel->src_port;
+	struct tb_port *up = tunnel->dst_port;
+	int ret;
+
+	ret = tb_switch_is_usb4(down->sw) ?
+		tb_pci_port_ltssm_state_detect(down) : 0;
+	if (ret)
+		return ret;
+
+	return tb_switch_is_usb4(up->sw) ?
+		tb_pci_port_ltssm_state_detect(up) : 0;
 }
 
 static int tb_pci_set_ext_encapsulation(struct tb_tunnel *tunnel, bool enable)
@@ -473,6 +531,7 @@ struct tb_tunnel *tb_tunnel_discover_pci(struct tb *tb, struct tb_port *down,
 		goto err_deactivate;
 	}
 
+	tb_tunnel_set_active(tunnel, true);
 	tb_tunnel_dbg(tunnel, "discovered\n");
 	return tunnel;
 
@@ -505,6 +564,7 @@ struct tb_tunnel *tb_tunnel_alloc_pci(struct tb *tb, struct tb_port *up,
 	if (!tunnel)
 		return NULL;
 
+	tunnel->pre_activate = tb_pci_pre_activate;
 	tunnel->activate = tb_pci_activate;
 	tunnel->src_port = down;
 	tunnel->dst_port = up;
@@ -1055,8 +1115,14 @@ static void tb_dp_dprx_work(struct work_struct *work)
 	struct tb_tunnel *tunnel = container_of(work, typeof(*tunnel), dprx_work.work);
 	struct tb *tb = tunnel->tb;
 
+	/*
+	 * The DPRX read can be canceled while this work is waiting for
+	 * tb->lock. Check the flag only once it is held: while the lock is
+	 * held the tunnel cannot be torn down under us and the adapters are
+	 * safe to access.
+	 */
+	mutex_lock(&tb->lock);
 	if (!tunnel->dprx_canceled) {
-		mutex_lock(&tb->lock);
 		if (tb_dp_is_usb4(tunnel->src_port->sw) &&
 		    tb_dp_wait_dprx(tunnel, TB_DPRX_WAIT_TIMEOUT)) {
 			if (ktime_before(ktime_get(), tunnel->dprx_timeout)) {
@@ -1068,41 +1134,42 @@ static void tb_dp_dprx_work(struct work_struct *work)
 		} else {
 			tb_tunnel_set_active(tunnel, true);
 		}
-		mutex_unlock(&tb->lock);
 	}
+	mutex_unlock(&tb->lock);
 
-	if (tunnel->callback)
-		tunnel->callback(tunnel, tunnel->callback_data);
+	tunnel->callback(tunnel);
 	tb_tunnel_put(tunnel);
+	tb_domain_put(tb);
 }
 
 static int tb_dp_dprx_start(struct tb_tunnel *tunnel)
 {
 	/*
-	 * Bump up the reference to keep the tunnel around. It will be
-	 * dropped in tb_dp_dprx_stop() once the tunnel is deactivated.
+	 * Bump up the references to keep the tunnel and the domain around
+	 * until the work has run or has been canceled.
 	 */
 	tb_tunnel_get(tunnel);
+	tb_domain_get(tunnel->tb);
 
 	tunnel->dprx_started = true;
+	tunnel->dprx_canceled = false;
+	tunnel->dprx_timeout = dprx_timeout_to_ktime(dprx_timeout);
+	queue_delayed_work(tunnel->tb->wq, &tunnel->dprx_work, 0);
 
-	if (tunnel->callback) {
-		tunnel->dprx_timeout = dprx_timeout_to_ktime(dprx_timeout);
-		queue_delayed_work(tunnel->tb->wq, &tunnel->dprx_work, 0);
-		return -EINPROGRESS;
-	}
-
-	return tb_dp_is_usb4(tunnel->src_port->sw) ?
-		tb_dp_wait_dprx(tunnel, dprx_timeout) : 0;
+	return -EINPROGRESS;
 }
 
 static void tb_dp_dprx_stop(struct tb_tunnel *tunnel)
 {
+	struct tb *tb = tunnel->tb;
+
 	if (tunnel->dprx_started) {
 		tunnel->dprx_started = false;
 		tunnel->dprx_canceled = true;
-		if (cancel_delayed_work(&tunnel->dprx_work))
+		if (cancel_delayed_work(&tunnel->dprx_work)) {
 			tb_tunnel_put(tunnel);
+			tb_domain_put(tb);
+		}
 	}
 }
 
@@ -1544,19 +1611,25 @@ static void tb_dp_dump(struct tb_tunnel *tunnel)
  * @tb: Pointer to the domain structure
  * @in: DP in adapter
  * @alloc_hopid: Allocate HopIDs from visited ports
+ * @callback: Callback that is called when the DP tunnel is fully
+ *	      activated (or there is an error)
  *
  * If @in adapter is active, follows the tunnel to the DP out adapter
  * and back. Returns the discovered tunnel or %NULL if there was no
- * tunnel.
+ * tunnel. See tb_tunnel_alloc_dp() for @callback.
  *
  * Return: Pointer to &struct tb_tunnel or %NULL if no tunnel found.
  */
 struct tb_tunnel *tb_tunnel_discover_dp(struct tb *tb, struct tb_port *in,
-					bool alloc_hopid)
+					bool alloc_hopid,
+					void (*callback)(struct tb_tunnel *))
 {
 	struct tb_tunnel *tunnel;
 	struct tb_port *port;
 	struct tb_path *path;
+
+	if (WARN_ON(!callback))
+		return NULL;
 
 	if (!tb_dp_port_is_enabled(in))
 		return NULL;
@@ -1573,6 +1646,8 @@ struct tb_tunnel *tb_tunnel_discover_dp(struct tb *tb, struct tb_port *in,
 	tunnel->alloc_bandwidth = tb_dp_alloc_bandwidth;
 	tunnel->consumed_bandwidth = tb_dp_consumed_bandwidth;
 	tunnel->src_port = in;
+	tunnel->callback = callback;
+	INIT_DELAYED_WORK(&tunnel->dprx_work, tb_dp_dprx_work);
 
 	path = tb_path_discover(in, TB_DP_VIDEO_HOPID, NULL, -1,
 				&tunnel->dst_port, "Video", alloc_hopid);
@@ -1618,6 +1693,7 @@ struct tb_tunnel *tb_tunnel_discover_dp(struct tb *tb, struct tb_port *in,
 
 	tb_dp_dump(tunnel);
 
+	tb_tunnel_set_active(tunnel, true);
 	tb_tunnel_dbg(tunnel, "discovered\n");
 	return tunnel;
 
@@ -1639,31 +1715,29 @@ err_free:
  *	    %0 if no available bandwidth.
  * @max_down: Maximum available downstream bandwidth for the DP tunnel.
  *	      %0 if no available bandwidth.
- * @callback: Optional callback that is called when the DP tunnel is
- *	      fully activated (or there is an error)
- * @callback_data: Optional data for @callback
+ * @callback: Callback that is called when the DP tunnel is fully
+ *	      activated (or there is an error)
  *
  * Allocates a tunnel between @in and @out that is capable of tunneling
- * Display Port traffic. If @callback is not %NULL it will be called
- * after tb_tunnel_activate() once the tunnel has been fully activated.
- * It can call tb_tunnel_is_active() to check if activation was
- * successful (or if it returns %false there was some sort of issue).
- * The @callback is called without @tb->lock held.
+ * Display Port traffic. The @callback is called after tb_tunnel_activate()
+ * once the tunnel has been fully activated. It can call
+ * tb_tunnel_is_active() to check if activation was successful (or if it
+ * returns %false there was some sort of issue). The @callback is called
+ * without @tb->lock held.
  *
  * Return: Pointer to @struct tb_tunnel or %NULL in case of failure.
  */
 struct tb_tunnel *tb_tunnel_alloc_dp(struct tb *tb, struct tb_port *in,
 				     struct tb_port *out, int link_nr,
 				     int max_up, int max_down,
-				     void (*callback)(struct tb_tunnel *, void *),
-				     void *callback_data)
+				     void (*callback)(struct tb_tunnel *))
 {
 	struct tb_tunnel *tunnel;
 	struct tb_path **paths;
 	struct tb_path *path;
 	bool pm_support;
 
-	if (WARN_ON(!in->cap_adap || !out->cap_adap))
+	if (WARN_ON(!in->cap_adap || !out->cap_adap || !callback))
 		return NULL;
 
 	tunnel = tb_tunnel_alloc(tb, 3, TB_TUNNEL_DP);
@@ -1682,7 +1756,6 @@ struct tb_tunnel *tb_tunnel_alloc_dp(struct tb *tb, struct tb_port *in,
 	tunnel->max_up = max_up;
 	tunnel->max_down = max_down;
 	tunnel->callback = callback;
-	tunnel->callback_data = callback_data;
 	INIT_DELAYED_WORK(&tunnel->dprx_work, tb_dp_dprx_work);
 
 	paths = tunnel->paths;
@@ -2226,26 +2299,43 @@ struct tb_tunnel *tb_tunnel_discover_usb3(struct tb *tb, struct tb_port *down,
 	if (!tb_route(down->sw)) {
 		int ret;
 
-		/*
-		 * Read the initial bandwidth allocation for the first
-		 * hop tunnel.
-		 */
-		ret = usb4_usb3_port_allocated_bandwidth(down,
-			&tunnel->allocated_up, &tunnel->allocated_down);
-		if (ret)
-			goto err_deactivate;
+		tunnel->consumed_bandwidth = tb_usb3_consumed_bandwidth;
+
+		if (down->sw->no_usb3_bw_alloc) {
+			/*
+			 * The host router does not implement the bandwidth
+			 * allocation registers and nothing can be read back
+			 * here. Book 90% of the maximum link rate in software
+			 * instead.
+			 */
+			ret = tb_usb3_max_link_rate(tunnel->dst_port, down);
+			if (ret < 0)
+				goto err_deactivate;
+
+			tunnel->allocated_up = ret * 90 / 100;
+			tunnel->allocated_down = tunnel->allocated_up;
+		} else {
+			/*
+			 * Read the initial bandwidth allocation for the first
+			 * hop tunnel.
+			 */
+			ret = usb4_usb3_port_allocated_bandwidth(down,
+				&tunnel->allocated_up, &tunnel->allocated_down);
+			if (ret)
+				goto err_deactivate;
+
+			tunnel->pre_activate = tb_usb3_pre_activate;
+			tunnel->release_unused_bandwidth =
+				tb_usb3_release_unused_bandwidth;
+			tunnel->reclaim_available_bandwidth =
+				tb_usb3_reclaim_available_bandwidth;
+		}
 
 		tb_tunnel_dbg(tunnel, "currently allocated bandwidth %d/%d Mb/s\n",
 			      tunnel->allocated_up, tunnel->allocated_down);
-
-		tunnel->pre_activate = tb_usb3_pre_activate;
-		tunnel->consumed_bandwidth = tb_usb3_consumed_bandwidth;
-		tunnel->release_unused_bandwidth =
-			tb_usb3_release_unused_bandwidth;
-		tunnel->reclaim_available_bandwidth =
-			tb_usb3_reclaim_available_bandwidth;
 	}
 
+	tb_tunnel_set_active(tunnel, true);
 	tb_tunnel_dbg(tunnel, "discovered\n");
 	return tunnel;
 
@@ -2323,12 +2413,15 @@ struct tb_tunnel *tb_tunnel_alloc_usb3(struct tb *tb, struct tb_port *up,
 		tunnel->allocated_up = min(max_rate, max_up);
 		tunnel->allocated_down = min(max_rate, max_down);
 
-		tunnel->pre_activate = tb_usb3_pre_activate;
 		tunnel->consumed_bandwidth = tb_usb3_consumed_bandwidth;
-		tunnel->release_unused_bandwidth =
-			tb_usb3_release_unused_bandwidth;
-		tunnel->reclaim_available_bandwidth =
-			tb_usb3_reclaim_available_bandwidth;
+
+		if (!down->sw->no_usb3_bw_alloc) {
+			tunnel->pre_activate = tb_usb3_pre_activate;
+			tunnel->release_unused_bandwidth =
+				tb_usb3_release_unused_bandwidth;
+			tunnel->reclaim_available_bandwidth =
+				tb_usb3_reclaim_available_bandwidth;
+		}
 	}
 
 	return tunnel;
