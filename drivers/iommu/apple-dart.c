@@ -213,6 +213,8 @@ struct apple_dart_hw {
  * @pgsize: pagesize supported by this DART
  * @supports_bypass: indicates if this DART supports bypass mode
  * @locked: indicates if this DART is locked
+ * @iova_offset: what the bus in front of this DART adds to the addresses its
+ *		 devices use before they arrive here
  * @sid2group: maps stream ids to iommu_groups
  * @iommu: iommu core device
  */
@@ -238,6 +240,7 @@ struct apple_dart {
 
 	dma_addr_t dma_min;
 	dma_addr_t dma_max;
+	u64 iova_offset;
 
 	struct iommu_group *sid2group[DART_MAX_STREAMS];
 	struct iommu_device iommu;
@@ -286,6 +289,8 @@ struct apple_dart_domain {
 
 	bool finalized;
 	u64 mask;
+	/* Added to every IOVA of the domain to get the address the DART sees */
+	u64 iova_offset;
 	struct mutex init_lock;
 	struct apple_dart_atomic_stream_map stream_maps[MAX_DARTS_PER_DEVICE];
 
@@ -679,7 +684,7 @@ static phys_addr_t apple_dart_iova_to_phys(struct iommu_domain *domain,
 	if (!ops)
 		return 0;
 
-	return ops->iova_to_phys(ops, iova & dart_domain->mask);
+	return ops->iova_to_phys(ops, (iova + dart_domain->iova_offset) & dart_domain->mask);
 }
 
 static int apple_dart_map_pages(struct iommu_domain *domain, unsigned long iova,
@@ -693,8 +698,8 @@ static int apple_dart_map_pages(struct iommu_domain *domain, unsigned long iova,
 	if (!ops)
 		return -ENODEV;
 
-	return ops->map_pages(ops, iova & dart_domain->mask, paddr, pgsize,
-			      pgcount, prot, gfp, mapped);
+	return ops->map_pages(ops, (iova + dart_domain->iova_offset) & dart_domain->mask,
+			      paddr, pgsize, pgcount, prot, gfp, mapped);
 }
 
 static size_t apple_dart_unmap_pages(struct iommu_domain *domain,
@@ -705,8 +710,8 @@ static size_t apple_dart_unmap_pages(struct iommu_domain *domain,
 	struct apple_dart_domain *dart_domain = to_dart_domain(domain);
 	struct io_pgtable_ops *ops = dart_domain->pgtbl_ops;
 
-	return ops->unmap_pages(ops, iova & dart_domain->mask, pgsize, pgcount,
-				gather);
+	return ops->unmap_pages(ops, (iova + dart_domain->iova_offset) & dart_domain->mask,
+				pgsize, pgcount, gather);
 }
 
 static void
@@ -757,7 +762,8 @@ static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
 {
 	struct apple_dart *dart = cfg->stream_maps[0].dart;
 	struct io_pgtable_cfg pgtbl_cfg;
-	u32 ias = min_t(u32, dart->ias, fls64(cfg->dma_max));
+	/* The page tables have to reach what the DART sees, not what the device uses */
+	u32 ias = min_t(u32, dart->ias, fls64(cfg->dma_max + dart->iova_offset));
 	dma_addr_t dma_max = cfg->dma_max;
 	int ret = 0;
 	int i, j;
@@ -829,6 +835,7 @@ static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
 	}
 
 	dart_domain->mask = DMA_BIT_MASK(pgtbl_cfg.ias);
+	dart_domain->iova_offset = dart->iova_offset;
 	dart_domain->domain.pgsize_bitmap = pgtbl_cfg.pgsize_bitmap;
 	dart_domain->domain.geometry.aperture_start = cfg->dma_min;
 	dart_domain->domain.geometry.aperture_end = dma_max;
@@ -1514,6 +1521,30 @@ static int apple_dart_probe(struct platform_device *pdev)
 		}
 		dev_info(&pdev->dev, "Limiting DMA range to %pad..%pad\n",
 				&dart->dma_min, &dart->dma_max);
+	}
+
+	/*
+	 * Some buses add a constant to the addresses of their devices before
+	 * they reach the DART: the PCIe ports tunneled over Thunderbolt add
+	 * 0x100_00000000, seen as translation faults at that offset from the
+	 * address a device was given. The devices keep using plain addresses
+	 * and the mappings are made where the DART looks for them.
+	 */
+	ret = of_property_read_u64(dev->of_node, "apple,dma-offset", &dart->iova_offset);
+	if (ret == -EINVAL) {
+		ret = 0;
+	} else if (ret) {
+		goto err_clk_disable;
+	} else {
+		if (!IS_ALIGNED(dart->iova_offset, dart->pgsize) ||
+		    (dart->dma_max + dart->iova_offset) & ~DMA_BIT_MASK(dart->ias)) {
+			dev_err(&pdev->dev, "Invalid DMA offset 0x%llx for ias=%d\n",
+				dart->iova_offset, dart->ias);
+			ret = -EINVAL;
+			goto err_clk_disable;
+		}
+		dev_info(&pdev->dev, "Device addresses arrive with offset 0x%llx\n",
+			 dart->iova_offset);
 	}
 
 	if (dart->num_streams > DART_MAX_STREAMS) {
