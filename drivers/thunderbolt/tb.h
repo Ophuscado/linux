@@ -772,6 +772,9 @@ extern const struct device_type usb4_port_device_type;
 
 int tb_domain_init(void);
 void tb_domain_exit(void);
+int tb_protocol_adapter_init(void);
+void tb_protocol_adapter_exit(void);
+
 int tb_xdomain_init(void);
 void tb_xdomain_exit(void);
 

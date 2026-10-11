@@ -11,6 +11,8 @@
 
 #include <linux/thunderbolt.h>
 
+struct tb_tunnel;
+
 enum nhi_fw_mode {
 	NHI_FW_SAFE_MODE,
 	NHI_FW_AUTH_MODE,
@@ -82,6 +84,10 @@ struct tb_nhi_ring_layout {
  * @is_present: Whether the device is currently present on the parent bus
  * @init_interrupts: NHI specific interrupt initialization hook
  * @reset_interface: Resets the host interface
+ * @tunnel_notify: Called after a tunnel starting at the host router has been
+ *		   activated and after it has been deactivated, for host
+ *		   routers whose protocol adapters lead to controllers
+ *		   that need to be told out-of-band
  */
 struct tb_nhi_ops {
 	int (*init)(struct tb_nhi *nhi);
@@ -100,6 +106,7 @@ struct tb_nhi_ops {
 	bool (*is_present)(struct tb_nhi *nhi);
 	int (*init_interrupts)(struct tb_nhi *nhi);
 	void (*reset_interface)(struct tb_nhi *nhi);
+	void (*tunnel_notify)(struct tb_tunnel *tunnel, bool active);
 };
 
 /*

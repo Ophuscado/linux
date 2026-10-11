@@ -12,6 +12,7 @@
 #include <linux/ktime.h>
 #include <linux/string_helpers.h>
 
+#include "nhi.h"
 #include "tunnel.h"
 #include "tb.h"
 
@@ -271,16 +272,39 @@ void tb_tunnel_event(struct tb *tb, enum tb_tunnel_event event,
 	kfree(envp[0]);
 }
 
+/*
+ * Tunnels starting at the host router end in one of its own protocol adapters.
+ * Tell the NHI driver about them, for host routers whose adapters lead to
+ * controllers that only work while they know about the tunnel.
+ */
+static void tb_tunnel_notify_nhi(struct tb_tunnel *tunnel, bool active)
+{
+	const struct tb_nhi_ops *ops = tunnel->tb->nhi->ops;
+
+	if (!ops || !ops->tunnel_notify)
+		return;
+	if (!tunnel->src_port || tb_route(tunnel->src_port->sw))
+		return;
+
+	ops->tunnel_notify(tunnel, active);
+}
+
 static inline void tb_tunnel_set_active(struct tb_tunnel *tunnel, bool active)
 {
+	bool was_active = tunnel->state == TB_TUNNEL_ACTIVE;
+
 	if (active) {
 		tunnel->state = TB_TUNNEL_ACTIVE;
 		tb_tunnel_event(tunnel->tb, TB_TUNNEL_ACTIVATED, tunnel->type,
 				tunnel->src_port, tunnel->dst_port);
+		if (!was_active)
+			tb_tunnel_notify_nhi(tunnel, true);
 	} else {
 		tunnel->state = TB_TUNNEL_INACTIVE;
 		tb_tunnel_event(tunnel->tb, TB_TUNNEL_DEACTIVATED, tunnel->type,
 				tunnel->src_port, tunnel->dst_port);
+		if (was_active)
+			tb_tunnel_notify_nhi(tunnel, false);
 	}
 }
 

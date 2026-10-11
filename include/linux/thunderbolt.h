@@ -11,6 +11,7 @@
 #ifndef THUNDERBOLT_H_
 #define THUNDERBOLT_H_
 
+#include <linux/err.h>
 #include <linux/types.h>
 
 struct config_group;
@@ -739,11 +740,59 @@ int tb_configfs_register_group(struct config_group *group);
 void tb_configfs_unregister_group(struct config_group *group);
 #endif
 
+#endif /* CONFIG_USB4 */
+
+struct tb_protocol_adapter;
+typedef int (*tb_protocol_adapter_activate_t)(struct tb_protocol_adapter *adapter);
+typedef void (*tb_protocol_adapter_deactivate_t)(struct tb_protocol_adapter *adapter);
+
+/**
+ * struct tb_protocol_adapter_desc - Description of an out-of-band protocol adapter
+ * @fwnode: Firmware node of the controller behind the adapter, used to look it up
+ * @activate: Called once a tunnel to the adapter has been established
+ * @deactivate: Called once the tunnel to the adapter is gone
+ * @driver_data: Private data returned by tb_protocol_adapter_get_drvdata()
+ *
+ * Both callbacks may sleep and are called with the domain lock held.
+ */
+struct tb_protocol_adapter_desc {
+	struct fwnode_handle *fwnode;
+	tb_protocol_adapter_activate_t activate;
+	tb_protocol_adapter_deactivate_t deactivate;
+	void *driver_data;
+};
+
+#if IS_REACHABLE(CONFIG_USB4)
+struct tb_protocol_adapter *
+tb_protocol_adapter_register(struct device *parent,
+			     const struct tb_protocol_adapter_desc *desc);
+void tb_protocol_adapter_unregister(struct tb_protocol_adapter *adapter);
+struct tb_protocol_adapter *tb_protocol_adapter_get(struct fwnode_handle *fwnode);
+void tb_protocol_adapter_put(struct tb_protocol_adapter *adapter);
+void *tb_protocol_adapter_get_drvdata(struct tb_protocol_adapter *adapter);
+int tb_protocol_adapter_activate(struct tb_protocol_adapter *adapter);
+void tb_protocol_adapter_deactivate(struct tb_protocol_adapter *adapter);
 #else /* CONFIG_USB4 */
 static inline bool usb4_usb3_port_match(struct device *usb4_port_dev,
 					const struct fwnode_handle *usb3_port_fwnode)
 {
 	return false;
+}
+
+static inline struct tb_protocol_adapter *
+tb_protocol_adapter_register(struct device *parent,
+			     const struct tb_protocol_adapter_desc *desc)
+{
+	return ERR_PTR(-ENODEV);
+}
+
+static inline void tb_protocol_adapter_unregister(struct tb_protocol_adapter *adapter)
+{
+}
+
+static inline void *tb_protocol_adapter_get_drvdata(struct tb_protocol_adapter *adapter)
+{
+	return NULL;
 }
 #endif /* CONFIG_USB4 */
 
