@@ -19,6 +19,10 @@ static int regmap_sn201202x_select_reg(struct spmi_device *sdev, u8 reg)
 	struct tps6598x *tps = spmi_device_get_drvdata(sdev);
 	struct sn201202x *sn = tps_to_sn(tps);
 
+	if (reg >= 0x80) {
+		WARN_ON(1);
+		return -EINVAL;
+	}
 	reinit_completion(&sn->select_completion);
 	err = spmi_register_zero_write(sdev, reg);
 	if (err)
@@ -153,7 +157,7 @@ static struct regmap *__devm_regmap_init_sn201202x(struct spmi_device *sdev,
 				dev, config)
 
 static const struct of_device_id sn201202x_of_match[] = {
-	{ .compatible = "apple,sn201202x", &tipd_sn201202x_data},
+	{ .compatible = "apple,sn201202x", (void *)TIPD_VARIANT_SN201202X},
 	{}
 };
 
@@ -169,7 +173,7 @@ static int sn201202x_probe(struct spmi_device *device)
 	match = of_match_device(sn201202x_of_match, &device->dev);
 	if (!match)
 		return -EINVAL;
-	data = match->data;
+	data = tipd_hw_variants[(enum tipd_hw_variant)match->data];
 
 	sn = devm_kzalloc(&device->dev, data->tps_struct_size, GFP_KERNEL);
 	if (!sn)
@@ -265,10 +269,9 @@ static int __maybe_unused sn201202x_suspend(struct device *dev)
 	err = spmi_command_sleep(sn->sdev);
 	if (err)
 		goto out_resume;
-	if (!wait_for_completion_timeout(&sn->sleep_completion, msecs_to_jiffies(100))) {
-		err = -ETIMEDOUT;
-		goto out_resume;
-	}
+	if (!wait_for_completion_timeout(&sn->sleep_completion, msecs_to_jiffies(100)))
+		dev_err(dev, "Waiting for sleep complete irq timed out");
+
 	return 0;
 
 out_resume:

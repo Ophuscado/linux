@@ -544,6 +544,9 @@ static void tps6598x_handle_plug_event(struct tps6598x *tps, u32 status)
 static void cd321x_typec_update_mode(struct tps6598x *tps, struct cd321x_status *st)
 {
 	struct cd321x *cd321x = container_of(tps, struct cd321x, tps);
+	struct typec_thunderbolt_switch_data tbt_switch_data = {
+		.state = TYPEC_THUNDERBOLT_SWITCH_OFF,
+	};
 
 	if (!(st->data_status & TPS_DATA_STATUS_DATA_CONNECTION)) {
 		if (cd321x->state.mode == TYPEC_STATE_SAFE)
@@ -551,6 +554,7 @@ static void cd321x_typec_update_mode(struct tps6598x *tps, struct cd321x_status 
 		cd321x->state.alt = NULL;
 		cd321x->state.mode = TYPEC_STATE_SAFE;
 		cd321x->state.data = NULL;
+		typec_thunderbolt_switch_set(cd321x->tbt_switch, &tbt_switch_data);
 		typec_mux_set(cd321x->mux, &cd321x->state);
 	} else if (st->data_status & TPS_DATA_STATUS_DP_CONNECTION) {
 		struct typec_displayport_data dp_data;
@@ -590,6 +594,7 @@ static void cd321x_typec_update_mode(struct tps6598x *tps, struct cd321x_status 
 		cd321x->state.alt = cd321x->port_altmode_dp;
 		cd321x->state.data = &dp_data;
 		cd321x->state.mode = mode;
+		typec_thunderbolt_switch_set(cd321x->tbt_switch, &tbt_switch_data);
 		typec_mux_set(cd321x->mux, &cd321x->state);
 	} else if (st->data_status & TPS_DATA_STATUS_TBT_CONNECTION) {
 		struct typec_thunderbolt_data tbt_data;
@@ -598,13 +603,30 @@ static void cd321x_typec_update_mode(struct tps6598x *tps, struct cd321x_status 
 		   cd321x->state.mode == TYPEC_TBT_MODE)
 			return;
 
-		tbt_data.cable_mode = le16_to_cpu(st->intel_vid_status.cable_mode);
-		tbt_data.device_mode = le16_to_cpu(st->intel_vid_status.device_mode);
-		tbt_data.enter_vdo = le16_to_cpu(st->intel_vid_status.enter_vdo);
+		tbt_data.cable_mode = TBT_MODE |
+			TBT_SET_CABLE_SPEED(TPS_DATA_STATUS_TBT_CABLE_SPEED(st->data_status)) |
+			TBT_SET_CABLE_ROUNDED(TPS_DATA_STATUS_TBT_CABLE_GEN(st->data_status));
+		if (st->data_status & TPS_DATA_STATUS_OPTICAL_CABLE)
+			tbt_data.cable_mode |= TBT_CABLE_OPTICAL;
+		if (st->data_status & TPS_DATA_STATUS_ACTIVE_LINK_TRAIN)
+			tbt_data.cable_mode |= TBT_CABLE_LINK_TRAINING;
+		if (st->data_status & TPS_DATA_STATUS_ACTIVE_CABLE)
+			tbt_data.cable_mode |= TBT_CABLE_ACTIVE_PASSIVE;
+		tbt_data.device_mode = TBT_MODE |
+			(u32)le16_to_cpu(st->intel_vid_status.device_mode) << 16;
+		tbt_data.enter_vdo =
+			(u32)le16_to_cpu(st->intel_vid_status.enter_vdo) << 16;
 		cd321x->state.alt = cd321x->port_altmode_tbt;
 		cd321x->state.mode = TYPEC_TBT_MODE;
 		cd321x->state.data = &tbt_data;
 		typec_mux_set(cd321x->mux, &cd321x->state);
+
+		tbt_switch_data.state = TYPEC_THUNDERBOLT_SWITCH_TBT;
+		tbt_switch_data.tbt = tbt_data;
+		tbt_switch_data.orientation = TPS_STATUS_TO_UPSIDE_DOWN(st->status) ?
+						      TYPEC_ORIENTATION_REVERSE :
+						      TYPEC_ORIENTATION_NORMAL;
+		typec_thunderbolt_switch_set(cd321x->tbt_switch, &tbt_switch_data);
 	} else if (st->data_status & CD321X_DATA_STATUS_USB4_CONNECTION) {
 		struct enter_usb_data eusb_data;
 
@@ -619,17 +641,34 @@ static void cd321x_typec_update_mode(struct tps6598x *tps, struct cd321x_status 
 		cd321x->state.data = &eusb_data;
 		cd321x->state.mode = TYPEC_MODE_USB4;
 		typec_mux_set(cd321x->mux, &cd321x->state);
+
+		tbt_switch_data.state = TYPEC_THUNDERBOLT_SWITCH_USB4;
+		tbt_switch_data.usb4 = eusb_data;
+		tbt_switch_data.orientation = TPS_STATUS_TO_UPSIDE_DOWN(st->status) ?
+						      TYPEC_ORIENTATION_REVERSE :
+						      TYPEC_ORIENTATION_NORMAL;
+		typec_thunderbolt_switch_set(cd321x->tbt_switch, &tbt_switch_data);
 	} else {
 		if (cd321x->state.alt == NULL && cd321x->state.mode == TYPEC_STATE_USB)
 			return;
 		cd321x->state.alt = NULL;
 		cd321x->state.mode = TYPEC_STATE_USB;
 		cd321x->state.data = NULL;
+		typec_thunderbolt_switch_set(cd321x->tbt_switch, &tbt_switch_data);
 		typec_mux_set(cd321x->mux, &cd321x->state);
 	}
 
 	/* Clear data since it's no longer used after typec_mux_set and points to the stack */
 	cd321x->state.data = NULL;
+}
+
+/* True while the port is in a tunneled mode, i.e. USB4 or the Thunderbolt alternate mode. */
+static bool cd321x_state_is_tunneled(const struct cd321x *cd321x)
+{
+	if (!cd321x->state.alt)
+		return cd321x->state.mode == TYPEC_MODE_USB4;
+
+	return cd321x->state.alt == cd321x->port_altmode_tbt;
 }
 
 static void cd321x_update_work(struct work_struct *work)
@@ -638,6 +677,9 @@ static void cd321x_update_work(struct work_struct *work)
 					    struct cd321x, update_work);
 	struct tps6598x *tps = &cd321x->tps;
 	struct cd321x_status st;
+	struct typec_thunderbolt_switch_data tbt_switch_data = {
+		.state = TYPEC_THUNDERBOLT_SWITCH_OFF,
+	};
 
 	guard(mutex)(&tps->lock);
 
@@ -650,6 +692,11 @@ static void cd321x_update_work(struct work_struct *work)
 
 	bool usb_connection = st.data_status &
 			      (TPS_DATA_STATUS_USB2_CONNECTION | TPS_DATA_STATUS_USB3_CONNECTION);
+
+	bool was_tunneled = cd321x_state_is_tunneled(cd321x);
+	bool is_tunneled = new_connected &&
+			   (st.data_status & (TPS_DATA_STATUS_TBT_CONNECTION |
+					      CD321X_DATA_STATUS_USB4_CONNECTION));
 
 	enum usb_role old_role = usb_role_switch_get_role(tps->role_sw);
 	enum usb_role new_role = USB_ROLE_NONE;
@@ -675,8 +722,15 @@ static void cd321x_update_work(struct work_struct *work)
 		 (is_pd && memcmp(&st.partner_identity,
 				  &cd321x->cur_partner_identity, sizeof(struct usb_pd_identity))));
 
-	/* If we are switching from an active role, transition to USB_ROLE_NONE first */
-	if (old_role != USB_ROLE_NONE && (new_role != old_role || was_disconnected))
+	/*
+	 * If we are switching from an active role, transition to USB_ROLE_NONE first.
+	 * The same is needed when a partner enters or leaves USB4/Thunderbolt without a
+	 * disconnect, e.g. a device that gives up on USB4 and falls back to USB3: the PHY
+	 * can only change mode while the USB controller is down, otherwise the port is
+	 * left with USB2 only.
+	 */
+	if (old_role != USB_ROLE_NONE &&
+	    (new_role != old_role || was_disconnected || was_tunneled != is_tunneled))
 		usb_role_switch_set_role(tps->role_sw, USB_ROLE_NONE);
 
 	/* Process partner disconnection or change */
@@ -688,6 +742,7 @@ static void cd321x_update_work(struct work_struct *work)
 
 	/* If there was a disconnection, set PHY to off */
 	if (!new_connected || was_disconnected) {
+		typec_thunderbolt_switch_set(cd321x->tbt_switch, &tbt_switch_data);
 		cd321x->state.alt = NULL;
 		cd321x->state.mode = TYPEC_STATE_SAFE;
 		cd321x->state.data = NULL;
@@ -1187,6 +1242,12 @@ cd321x_register_port(struct tps6598x *tps, struct fwnode_handle *fwnode)
 		goto err_unregister_altmodes;
 	}
 
+	cd321x->tbt_switch = fwnode_typec_thunderbolt_switch_get(fwnode);
+	if (IS_ERR(cd321x->tbt_switch)) {
+		ret = PTR_ERR(cd321x->tbt_switch);
+		goto err_unregister_mux;
+	}
+
 	cd321x->state.alt = NULL;
 	cd321x->state.mode = TYPEC_STATE_SAFE;
 	cd321x->state.data = NULL;
@@ -1194,6 +1255,9 @@ cd321x_register_port(struct tps6598x *tps, struct fwnode_handle *fwnode)
 
 	return 0;
 
+err_unregister_mux:
+	typec_mux_put(cd321x->mux);
+	cd321x->mux = NULL;
 err_unregister_altmodes:
 	typec_unregister_altmode(cd321x->port_altmode_dp);
 	typec_unregister_altmode(cd321x->port_altmode_tbt);
@@ -1215,6 +1279,8 @@ cd321x_unregister_port(struct tps6598x *tps)
 {
 	struct cd321x *cd321x = container_of(tps, struct cd321x, tps);
 
+	typec_thunderbolt_switch_put(cd321x->tbt_switch);
+	cd321x->tbt_switch = NULL;
 	typec_mux_put(cd321x->mux);
 	cd321x->mux = NULL;
 	typec_unregister_altmode(cd321x->port_altmode_dp);
@@ -1830,7 +1896,7 @@ int tipd_resume(struct tps6598x *tps)
 }
 EXPORT_SYMBOL_GPL(tipd_resume);
 
-const struct tipd_data tipd_cd321x_data = {
+static const struct tipd_data tipd_cd321x_data = {
 	.irq_handler = cd321x_interrupt,
 	.irq_mask1 = APPLE_CD_REG_INT_POWER_STATUS_UPDATE |
 		     APPLE_CD_REG_INT_DATA_STATUS_UPDATE |
@@ -1848,9 +1914,8 @@ const struct tipd_data tipd_cd321x_data = {
 	.switch_power_state = cd321x_switch_power_state,
 	.connect = cd321x_connect,
 };
-EXPORT_SYMBOL_GPL(tipd_cd321x_data);
 
-const struct tipd_data tipd_tps6598x_data = {
+static const struct tipd_data tipd_tps6598x_data = {
 	.irq_handler = tps6598x_interrupt,
 	.irq_mask1 = TPS_REG_INT_POWER_STATUS_UPDATE |
 		     TPS_REG_INT_DATA_STATUS_UPDATE |
@@ -1867,9 +1932,8 @@ const struct tipd_data tipd_tps6598x_data = {
 	.reset = tps6598x_reset,
 	.connect = tps6598x_connect,
 };
-EXPORT_SYMBOL_GPL(tipd_tps6598x_data);
 
-const struct tipd_data tipd_tps25750_data = {
+static const struct tipd_data tipd_tps25750_data = {
 	.irq_handler = tps25750_interrupt,
 	.irq_mask1 = TPS_REG_INT_POWER_STATUS_UPDATE |
 		     TPS_REG_INT_DATA_STATUS_UPDATE |
@@ -1886,9 +1950,8 @@ const struct tipd_data tipd_tps25750_data = {
 	.reset = tps25750_reset,
 	.connect = tps6598x_connect,
 };
-EXPORT_SYMBOL_GPL(tipd_tps25750_data);
 
-const struct tipd_data tipd_sn201202x_data = {
+static const struct tipd_data tipd_sn201202x_data = {
 	.irq_handler = cd321x_interrupt,
 	.irq_mask1 = APPLE_CD_REG_INT_POWER_STATUS_UPDATE |
 		     APPLE_CD_REG_INT_DATA_STATUS_UPDATE |
@@ -1906,8 +1969,15 @@ const struct tipd_data tipd_sn201202x_data = {
 	.switch_power_state = cd321x_switch_power_state,
 	.connect = cd321x_connect,
 };
-EXPORT_SYMBOL_GPL(tipd_sn201202x_data);
+
+const struct tipd_data *tipd_hw_variants[] = {
+	[TIPD_VARIANT_CD321X] = &tipd_cd321x_data,
+	[TIPD_VARIANT_TPS6598X] = &tipd_tps6598x_data,
+	[TIPD_VARIANT_TPS25750] = &tipd_tps25750_data,
+	[TIPD_VARIANT_SN201202X] = &tipd_sn201202x_data,
+};
+EXPORT_SYMBOL_GPL(tipd_hw_variants);
 
 MODULE_AUTHOR("Heikki Krogerus <heikki.krogerus@linux.intel.com>");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("TI TPS6598x USB Power Delivery Controller Core Functions");

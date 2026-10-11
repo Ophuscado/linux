@@ -13,13 +13,15 @@
 
 static int tps6598x_probe_i2c(struct i2c_client *client)
 {
+	enum tipd_hw_variant variant;
 	const struct tipd_data *data;
 	struct tps6598x *tps;
 	int ret;
 
-	data = i2c_get_match_data(client);
-	if (!data)
+	variant = (enum tipd_hw_variant)i2c_get_match_data(client);
+	if (!variant || variant >= TIPD_VARIANT_MAX)
 		return -EINVAL;
+	data = tipd_hw_variants[variant];
 
 	tps = devm_kzalloc(&client->dev, data->tps_struct_size, GFP_KERNEL);
 	if (!tps)
@@ -75,15 +77,15 @@ static const struct dev_pm_ops tps6598x_pm_ops = {
 };
 
 static const struct of_device_id tps6598x_of_match[] = {
-	{ .compatible = "ti,tps6598x", &tipd_tps6598x_data},
-	{ .compatible = "apple,cd321x", &tipd_cd321x_data},
-	{ .compatible = "ti,tps25750", &tipd_tps25750_data},
+	{ .compatible = "ti,tps6598x", (void *)TIPD_VARIANT_TPS6598X},
+	{ .compatible = "apple,cd321x",  (void *)TIPD_VARIANT_CD321X},
+	{ .compatible = "ti,tps25750",  (void *)TIPD_VARIANT_TPS25750},
 	{}
 };
 MODULE_DEVICE_TABLE(of, tps6598x_of_match);
 
 static const struct i2c_device_id tps6598x_id[] = {
-	{ .name = "tps6598x", .driver_data = (kernel_ulong_t)&tipd_tps6598x_data },
+	{ .name = "tps6598x", .driver_data = (kernel_ulong_t)TIPD_VARIANT_TPS6598X },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tps6598x_id);

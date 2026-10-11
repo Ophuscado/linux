@@ -210,10 +210,10 @@
 #define TPS_DATA_STATUS_DP_PIN_ASSIGNMENT(x) \
 	TPS_FIELD_GET(TPS_DATA_STATUS_DP_PIN_ASSIGNMENT_MASK, (x))
 #define TPS_DATA_STATUS_TBT_CABLE_SPEED_MASK   GENMASK(27, 25)
-#define TPS_DATA_STATUS_TBT_CABLE_SPEED \
+#define TPS_DATA_STATUS_TBT_CABLE_SPEED(x) \
 	TPS_FIELD_GET(TPS_DATA_STATUS_TBT_CABLE_SPEED_MASK, (x))
 #define TPS_DATA_STATUS_TBT_CABLE_GEN_MASK     GENMASK(29, 28)
-#define TPS_DATA_STATUS_TBT_CABLE_GEN \
+#define TPS_DATA_STATUS_TBT_CABLE_GEN(x) \
 	TPS_FIELD_GET(TPS_DATA_STATUS_TBT_CABLE_GEN_MASK, (x))
 
 /* Map data status to DP spec assignments */
@@ -272,6 +272,15 @@
 /* Int Event Register length */
 #define TPS_65981_2_6_INTEVENT_LEN             8
 #define TPS_65987_8_INTEVENT_LEN               11
+
+enum tipd_hw_variant {
+	TIPD_VARIANT_INVALID = 0,
+	TIPD_VARIANT_CD321X,
+	TIPD_VARIANT_TPS6598X,
+	TIPD_VARIANT_TPS25750,
+	TIPD_VARIANT_SN201202X,
+	TIPD_VARIANT_MAX,
+};
 
 struct tps6598x;
 
@@ -342,7 +351,6 @@ struct tps6598x_intel_vid_status_reg {
 	__le32 attention_vdo;
 	__le16 enter_vdo;
 	__le16 device_mode;
-	__le16 cable_mode;
 } __packed;
 
 struct cd321x_status {
@@ -369,6 +377,8 @@ struct cd321x {
 	struct typec_mux *mux;
 	struct typec_mux_state state;
 
+	struct typec_thunderbolt_switch *tbt_switch;
+
 	struct cd321x_status update_status;
 	struct delayed_work update_work;
 	struct usb_pd_identity cur_partner_identity;
@@ -382,10 +392,7 @@ struct sn201202x {
 	struct spmi_device *sdev;
 };
 
-extern const struct tipd_data tipd_cd321x_data;
-extern const struct tipd_data tipd_tps6598x_data;
-extern const struct tipd_data tipd_tps25750_data;
-extern const struct tipd_data tipd_sn201202x_data;
+extern const struct tipd_data *tipd_hw_variants[];
 extern const struct regmap_config tps6598x_regmap_config;
 
 int tipd_init(struct tps6598x *tps);
