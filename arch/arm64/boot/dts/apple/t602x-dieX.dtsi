@@ -639,6 +639,12 @@
 		interrupts = <AIC_IRQ DIE_NO 1265 IRQ_TYPE_LEVEL_HIGH>;
 		power-domains = <&DIE_NODE(ps_atc0_pcie)>;
 		clocks = <&DIE_NODE(usb4_0_pcie_port)>;
+		/*
+		 * The port passes 32-bit addresses on and adds 0x100_00000000
+		 * to them (macOS: vm-base 0x100_80000000).
+		 */
+		apple,dma-range = <0x0 0x0 0x1 0x0>;
+		apple,dma-offset = /bits/ 64 <0x10000000000>;
 		status = "disabled";
 	};
 
@@ -870,6 +876,12 @@
 		interrupts = <AIC_IRQ DIE_NO 1283 IRQ_TYPE_LEVEL_HIGH>;
 		power-domains = <&DIE_NODE(ps_atc1_pcie)>;
 		clocks = <&DIE_NODE(usb4_1_pcie_port)>;
+		/*
+		 * The port passes 32-bit addresses on and adds 0x100_00000000
+		 * to them (macOS: vm-base 0x100_80000000).
+		 */
+		apple,dma-range = <0x0 0x0 0x1 0x0>;
+		apple,dma-offset = /bits/ 64 <0x10000000000>;
 		status = "disabled";
 	};
 
@@ -1101,6 +1113,12 @@
 		interrupts = <AIC_IRQ DIE_NO 1301 IRQ_TYPE_LEVEL_HIGH>;
 		power-domains = <&DIE_NODE(ps_atc2_pcie)>;
 		clocks = <&DIE_NODE(usb4_2_pcie_port)>;
+		/*
+		 * The port passes 32-bit addresses on and adds 0x100_00000000
+		 * to them (macOS: vm-base 0x100_80000000).
+		 */
+		apple,dma-range = <0x0 0x0 0x1 0x0>;
+		apple,dma-offset = /bits/ 64 <0x10000000000>;
 		status = "disabled";
 	};
 
@@ -1332,6 +1350,12 @@
 		interrupts = <AIC_IRQ DIE_NO 1319 IRQ_TYPE_LEVEL_HIGH>;
 		power-domains = <&DIE_NODE(ps_atc3_pcie)>;
 		clocks = <&DIE_NODE(usb4_3_pcie_port)>;
+		/*
+		 * The port passes 32-bit addresses on and adds 0x100_00000000
+		 * to them (macOS: vm-base 0x100_80000000).
+		 */
+		apple,dma-range = <0x0 0x0 0x1 0x0>;
+		apple,dma-offset = /bits/ 64 <0x10000000000>;
 		status = "disabled";
 	};
 
