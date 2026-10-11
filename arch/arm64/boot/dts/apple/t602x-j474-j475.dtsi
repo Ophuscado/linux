@@ -56,3 +56,133 @@
 	reset-gpios = <&pinctrl_nub 8 GPIO_ACTIVE_HIGH>;
 	interrupts-extended = <&pinctrl_ap 59 IRQ_TYPE_LEVEL_LOW>;
 };
+
+/*
+ * USB4 on the four rear Type-C ports. The M1 Mac Studio shares
+ * t600x-j375.dtsi but has no USB4 nodes in this tree, so this lives here.
+ */
+/ {
+	aliases {
+		usb4-0-acio = &usb4_0_acio;
+		usb4-0-nhi = &usb4_0_nhi;
+		usb4-1-acio = &usb4_1_acio;
+		usb4-1-nhi = &usb4_1_nhi;
+		usb4-2-acio = &usb4_2_acio;
+		usb4-2-nhi = &usb4_2_nhi;
+		usb4-3-acio = &usb4_3_acio;
+		usb4-3-nhi = &usb4_3_nhi;
+
+		usb4_0_rc = &usb4_0_acio;
+		usb4_0_nhi = &usb4_0_nhi;
+		usb4_1_rc = &usb4_1_acio;
+		usb4_1_nhi = &usb4_1_nhi;
+		usb4_2_rc = &usb4_2_acio;
+		usb4_2_nhi = &usb4_2_nhi;
+		usb4_3_rc = &usb4_3_acio;
+		usb4_3_nhi = &usb4_3_nhi;
+	};
+};
+
+&typec0 {
+	ports {
+		port@2 {
+			reg = <2>;
+			typec0_con_tbt: endpoint {
+				remote-endpoint = <&usb4_0_acio_tbt>;
+			};
+		};
+	};
+};
+
+&usb4_0_acio {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* 1: USB4 port, 3: PCIe, 4: USB3, 5 and 6: DisplayPort */
+		port@1 {
+			reg = <1>;
+			usb4_0_acio_tbt: endpoint {
+				remote-endpoint = <&typec0_con_tbt>;
+			};
+		};
+	};
+};
+
+&typec1 {
+	ports {
+		port@2 {
+			reg = <2>;
+			typec1_con_tbt: endpoint {
+				remote-endpoint = <&usb4_1_acio_tbt>;
+			};
+		};
+	};
+};
+
+&usb4_1_acio {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* 1: USB4 port, 3: PCIe, 4: USB3, 5 and 6: DisplayPort */
+		port@1 {
+			reg = <1>;
+			usb4_1_acio_tbt: endpoint {
+				remote-endpoint = <&typec1_con_tbt>;
+			};
+		};
+	};
+};
+
+&typec2 {
+	ports {
+		port@2 {
+			reg = <2>;
+			typec2_con_tbt: endpoint {
+				remote-endpoint = <&usb4_2_acio_tbt>;
+			};
+		};
+	};
+};
+
+&usb4_2_acio {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* 1: USB4 port, 3: PCIe, 4: USB3, 5 and 6: DisplayPort */
+		port@1 {
+			reg = <1>;
+			usb4_2_acio_tbt: endpoint {
+				remote-endpoint = <&typec2_con_tbt>;
+			};
+		};
+	};
+};
+
+&typec3 {
+	ports {
+		port@2 {
+			reg = <2>;
+			typec3_con_tbt: endpoint {
+				remote-endpoint = <&usb4_3_acio_tbt>;
+			};
+		};
+	};
+};
+
+&usb4_3_acio {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* 1: USB4 port, 3: PCIe, 4: USB3, 5 and 6: DisplayPort */
+		port@1 {
+			reg = <1>;
+			usb4_3_acio_tbt: endpoint {
+				remote-endpoint = <&typec3_con_tbt>;
+			};
+		};
+	};
+};
