@@ -140,6 +140,11 @@
 #define TB_VSE_CAP_APPLE_CABLE_INFO_LEGACY_ADAPTER BIT(9)
 #define TB_VSE_CAP_APPLE_CABLE_INFO_TBT2_3 BIT(10)
 
+static unsigned int cable_info_or;
+module_param(cable_info_or, uint, 0644);
+MODULE_PARM_DESC(cable_info_or,
+		 "Debug: bits OR-ed into the cable information word of a present cable");
+
 /**
  * struct apple_cio - Apple Converged I/O host router complex
  * @dev: ACIO device
@@ -854,6 +859,14 @@ static int apple_cio_tbt_switch_set(struct typec_thunderbolt_switch_dev *sw,
 		dev_dbg(acio->dev, "USB4 cable: eudo 0x%x, orientation %d -> cable info 0x%x\n",
 			data->usb4.eudo, data->orientation, acio->target_cable_info);
 		break;
+	}
+
+	/* Debug aid: lets cable-information bits be tested without rebuilding. */
+	if (acio->target_cable_info && cable_info_or) {
+		dev_info(acio->dev, "cable info 0x%x overridden to 0x%x\n",
+			 acio->target_cable_info,
+			 acio->target_cable_info | cable_info_or);
+		acio->target_cable_info |= cable_info_or;
 	}
 
 	if (acio->target_cable_info == acio->current_cable_info)
