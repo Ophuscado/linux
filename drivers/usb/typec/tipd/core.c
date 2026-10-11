@@ -662,6 +662,15 @@ static void cd321x_typec_update_mode(struct tps6598x *tps, struct cd321x_status 
 	cd321x->state.data = NULL;
 }
 
+/* True while the port is in a tunneled mode, i.e. USB4 or the Thunderbolt alternate mode. */
+static bool cd321x_state_is_tunneled(const struct cd321x *cd321x)
+{
+	if (!cd321x->state.alt)
+		return cd321x->state.mode == TYPEC_MODE_USB4;
+
+	return cd321x->state.alt == cd321x->port_altmode_tbt;
+}
+
 static void cd321x_update_work(struct work_struct *work)
 {
 	struct cd321x *cd321x = container_of(to_delayed_work(work),
@@ -683,6 +692,11 @@ static void cd321x_update_work(struct work_struct *work)
 
 	bool usb_connection = st.data_status &
 			      (TPS_DATA_STATUS_USB2_CONNECTION | TPS_DATA_STATUS_USB3_CONNECTION);
+
+	bool was_tunneled = cd321x_state_is_tunneled(cd321x);
+	bool is_tunneled = new_connected &&
+			   (st.data_status & (TPS_DATA_STATUS_TBT_CONNECTION |
+					      CD321X_DATA_STATUS_USB4_CONNECTION));
 
 	enum usb_role old_role = usb_role_switch_get_role(tps->role_sw);
 	enum usb_role new_role = USB_ROLE_NONE;
@@ -708,8 +722,15 @@ static void cd321x_update_work(struct work_struct *work)
 		 (is_pd && memcmp(&st.partner_identity,
 				  &cd321x->cur_partner_identity, sizeof(struct usb_pd_identity))));
 
-	/* If we are switching from an active role, transition to USB_ROLE_NONE first */
-	if (old_role != USB_ROLE_NONE && (new_role != old_role || was_disconnected))
+	/*
+	 * If we are switching from an active role, transition to USB_ROLE_NONE first.
+	 * The same is needed when a partner enters or leaves USB4/Thunderbolt without a
+	 * disconnect, e.g. a device that gives up on USB4 and falls back to USB3: the PHY
+	 * can only change mode while the USB controller is down, otherwise the port is
+	 * left with USB2 only.
+	 */
+	if (old_role != USB_ROLE_NONE &&
+	    (new_role != old_role || was_disconnected || was_tunneled != is_tunneled))
 		usb_role_switch_set_role(tps->role_sw, USB_ROLE_NONE);
 
 	/* Process partner disconnection or change */
