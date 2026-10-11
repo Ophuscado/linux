@@ -34,6 +34,20 @@
 		usb4_4_nhi = &usb4_0_nhi_die1;
 		usb4_5_rc = &usb4_1_acio_die1;
 		usb4_5_nhi = &usb4_1_nhi_die1;
+
+		/* Where the bootloader puts the tunables for PCIe tunneling */
+		usb4_0_pcie = &usb4_0_pcie;
+		usb4_0_pcie_adapter = &usb4_0_acio;
+		usb4_1_pcie = &usb4_1_pcie;
+		usb4_1_pcie_adapter = &usb4_1_acio;
+		usb4_2_pcie = &usb4_2_pcie;
+		usb4_2_pcie_adapter = &usb4_2_acio;
+		usb4_3_pcie = &usb4_3_pcie;
+		usb4_3_pcie_adapter = &usb4_3_acio;
+		usb4_4_pcie = &usb4_0_pcie_die1;
+		usb4_4_pcie_adapter = &usb4_0_acio_die1;
+		usb4_5_pcie = &usb4_1_pcie_die1;
+		usb4_5_pcie_adapter = &usb4_1_acio_die1;
 	};
 };
 
@@ -86,6 +100,61 @@
 
 /delete-node/ &usb4_3_acio_die1;
 /delete-node/ &usb4_3_mbox_die1;
+
+/delete-node/ &usb4_2_pcie_die1;
+/delete-node/ &usb4_2_pcie_dart_die1;
+
+/delete-node/ &usb4_3_pcie_die1;
+/delete-node/ &usb4_3_pcie_dart_die1;
+
+/* PCIe tunneling on the six Thunderbolt ports */
+&usb4_0_pcie_dart {
+	status = "okay";
+};
+
+&usb4_0_pcie {
+	status = "okay";
+};
+
+&usb4_1_pcie_dart {
+	status = "okay";
+};
+
+&usb4_1_pcie {
+	status = "okay";
+};
+
+&usb4_2_pcie_dart {
+	status = "okay";
+};
+
+&usb4_2_pcie {
+	status = "okay";
+};
+
+&usb4_3_pcie_dart {
+	status = "okay";
+};
+
+&usb4_3_pcie {
+	status = "okay";
+};
+
+&usb4_0_pcie_dart_die1 {
+	status = "okay";
+};
+
+&usb4_0_pcie_die1 {
+	status = "okay";
+};
+
+&usb4_1_pcie_dart_die1 {
+	status = "okay";
+};
+
+&usb4_1_pcie_die1 {
+	status = "okay";
+};
 
 /* delete unused always-on power-domains on die 1 */
 /delete-node/ &ps_atc2_usb_aon_die1;

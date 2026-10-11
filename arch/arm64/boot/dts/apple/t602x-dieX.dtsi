@@ -488,11 +488,13 @@
 	DIE_NODE(usb4_0_acio): cio@701ac0000 {
 		compatible = "apple,t6020-usb4-acio", "apple,t8103-usb4-acio";
 		reg = <0x7 0x01ac0000 0x0 0xc000>,
-			<0x7 0x01080000 0x0 0x20000>;
-		reg-names = "rc", "sram";
+			<0x7 0x01080000 0x0 0x20000>,
+			<0x7 0x01e44000 0x0 0x4000>;
+		reg-names = "rc", "sram", "pcie-adapter";
 
 		mboxes = <&DIE_NODE(usb4_0_mbox)>;
 		resets = <&DIE_NODE(cio_reset) 0>;
+		apple,tunneled-pcie = <&DIE_NODE(usb4_0_pcie_port)>;
 
 		power-domains = <&DIE_NODE(ps_atc0_cio)>,
 				<&DIE_NODE(ps_atc0_cio_pcie)>,
@@ -624,6 +626,82 @@
 		status = "disabled";
 	};
 
+	/*
+	 * PCIe controller behind the PCIe adapter of the usb4_0 host router.
+	 * Its registers and IOMMU are not set up by the bootloader, and the
+	 * IOMMU cannot be reached before the port's application clock runs.
+	 */
+	DIE_NODE(usb4_0_pcie_dart): iommu@721008000 {
+		compatible = "apple,t6020-dart", "apple,t8110-dart";
+		reg = <0x7 0x21008000 0x0 0x4000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ DIE_NO 1265 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&DIE_NODE(ps_atc0_pcie)>;
+		clocks = <&DIE_NODE(usb4_0_pcie_port)>;
+		status = "disabled";
+	};
+
+	DIE_NODE(usb4_0_pcie): pcie@730000000 {
+		compatible = "apple,t6020-usb4-pcie", "apple,t8103-usb4-pcie";
+		device_type = "pci";
+
+		reg = <0x7 0x30000000 0x0 0x4000000>,	/* config */
+			<0x7 0x20000000 0x0 0x8000>,	/* rc and fabric */
+			<0x7 0x21000000 0x0 0x8000>,	/* port0 */
+			<0x7 0x20200000 0x0 0x4000>;	/* debug */
+		reg-names = "config", "rc", "port0", "debug";
+
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ DIE_NO 1264 IRQ_TYPE_LEVEL_HIGH>;
+
+		msi-controller;
+		msi-parent = <&DIE_NODE(usb4_0_pcie)>;
+		msi-ranges = <&aic AIC_IRQ DIE_NO 1833 IRQ_TYPE_EDGE_RISING 32>;
+
+		/* Fixed, so that the internal controllers keep the lowest domains */
+		linux,pci-domain = <(8 + 4 * DIE_NO)>;
+
+		/* Every device behind the tunnel shares one stream of the IOMMU */
+		iommu-map = <0x0 &DIE_NODE(usb4_0_pcie_dart) 1 1>;
+		iommu-map-mask = <0x0>;
+
+		bus-range = <0x00 0x3f>;
+		#address-cells = <3>;
+		#size-cells = <2>;
+		/* The 64-bit window is not translated, so its bus address depends on the die */
+		ranges = <0x43000000 (0x8 + 0x20 * DIE_NO) 0x00000000
+				0x8 0x00000000 0x2 0x00000000>,
+			<0x02000000 0x0 0x00100000 0xa 0x00100000 0x0 0x3ff00000>,
+			<0x42000000 0x0 0x40000000 0xa 0x40000000 0x0 0x40000000>;
+
+		/* ps_atc0_usb_aon, which macOS lists as well, is always on */
+		power-domains = <&DIE_NODE(ps_atc0_pcie)>;
+		resets = <&DIE_NODE(ps_atc0_pcie)>;
+
+		dma-coherent;
+		status = "disabled";
+
+		DIE_NODE(usb4_0_pcie_port): pci@0,0 {
+			device_type = "pci";
+			reg = <0x0 0x0 0x0 0x0 0x0>;
+
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
+
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			#clock-cells = <0>;
+
+			interrupt-map-mask = <0 0 0 7>;
+			interrupt-map = <0 0 0 1 &DIE_NODE(usb4_0_pcie_port) 0 0 0 0>,
+					<0 0 0 2 &DIE_NODE(usb4_0_pcie_port) 0 0 0 1>,
+					<0 0 0 3 &DIE_NODE(usb4_0_pcie_port) 0 0 0 2>,
+					<0 0 0 4 &DIE_NODE(usb4_0_pcie_port) 0 0 0 3>;
+		};
+	};
+
 	DIE_NODE(usb4_1_mbox): mailbox@b01108000 {
 		compatible = "apple,t6020-asc-mailbox",
 			"apple,asc-mailbox-v4";
@@ -641,11 +719,13 @@
 	DIE_NODE(usb4_1_acio): cio@b01ac0000 {
 		compatible = "apple,t6020-usb4-acio", "apple,t8103-usb4-acio";
 		reg = <0xb 0x01ac0000 0x0 0xc000>,
-			<0xb 0x01080000 0x0 0x20000>;
-		reg-names = "rc", "sram";
+			<0xb 0x01080000 0x0 0x20000>,
+			<0xb 0x01e44000 0x0 0x4000>;
+		reg-names = "rc", "sram", "pcie-adapter";
 
 		mboxes = <&DIE_NODE(usb4_1_mbox)>;
 		resets = <&DIE_NODE(cio_reset) 1>;
+		apple,tunneled-pcie = <&DIE_NODE(usb4_1_pcie_port)>;
 
 		power-domains = <&DIE_NODE(ps_atc1_cio)>,
 				<&DIE_NODE(ps_atc1_cio_pcie)>,
@@ -777,6 +857,82 @@
 		status = "disabled";
 	};
 
+	/*
+	 * PCIe controller behind the PCIe adapter of the usb4_1 host router.
+	 * Its registers and IOMMU are not set up by the bootloader, and the
+	 * IOMMU cannot be reached before the port's application clock runs.
+	 */
+	DIE_NODE(usb4_1_pcie_dart): iommu@b21008000 {
+		compatible = "apple,t6020-dart", "apple,t8110-dart";
+		reg = <0xb 0x21008000 0x0 0x4000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ DIE_NO 1283 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&DIE_NODE(ps_atc1_pcie)>;
+		clocks = <&DIE_NODE(usb4_1_pcie_port)>;
+		status = "disabled";
+	};
+
+	DIE_NODE(usb4_1_pcie): pcie@b30000000 {
+		compatible = "apple,t6020-usb4-pcie", "apple,t8103-usb4-pcie";
+		device_type = "pci";
+
+		reg = <0xb 0x30000000 0x0 0x4000000>,	/* config */
+			<0xb 0x20000000 0x0 0x8000>,	/* rc and fabric */
+			<0xb 0x21000000 0x0 0x8000>,	/* port0 */
+			<0xb 0x20200000 0x0 0x4000>;	/* debug */
+		reg-names = "config", "rc", "port0", "debug";
+
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ DIE_NO 1282 IRQ_TYPE_LEVEL_HIGH>;
+
+		msi-controller;
+		msi-parent = <&DIE_NODE(usb4_1_pcie)>;
+		msi-ranges = <&aic AIC_IRQ DIE_NO 1865 IRQ_TYPE_EDGE_RISING 32>;
+
+		/* Fixed, so that the internal controllers keep the lowest domains */
+		linux,pci-domain = <(9 + 4 * DIE_NO)>;
+
+		/* Every device behind the tunnel shares one stream of the IOMMU */
+		iommu-map = <0x0 &DIE_NODE(usb4_1_pcie_dart) 1 1>;
+		iommu-map-mask = <0x0>;
+
+		bus-range = <0x00 0x3f>;
+		#address-cells = <3>;
+		#size-cells = <2>;
+		/* The 64-bit window is not translated, so its bus address depends on the die */
+		ranges = <0x43000000 (0xc + 0x20 * DIE_NO) 0x00000000
+				0xc 0x00000000 0x2 0x00000000>,
+			<0x02000000 0x0 0x00100000 0xe 0x00100000 0x0 0x3ff00000>,
+			<0x42000000 0x0 0x40000000 0xe 0x40000000 0x0 0x40000000>;
+
+		/* ps_atc1_usb_aon, which macOS lists as well, is always on */
+		power-domains = <&DIE_NODE(ps_atc1_pcie)>;
+		resets = <&DIE_NODE(ps_atc1_pcie)>;
+
+		dma-coherent;
+		status = "disabled";
+
+		DIE_NODE(usb4_1_pcie_port): pci@0,0 {
+			device_type = "pci";
+			reg = <0x0 0x0 0x0 0x0 0x0>;
+
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
+
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			#clock-cells = <0>;
+
+			interrupt-map-mask = <0 0 0 7>;
+			interrupt-map = <0 0 0 1 &DIE_NODE(usb4_1_pcie_port) 0 0 0 0>,
+					<0 0 0 2 &DIE_NODE(usb4_1_pcie_port) 0 0 0 1>,
+					<0 0 0 3 &DIE_NODE(usb4_1_pcie_port) 0 0 0 2>,
+					<0 0 0 4 &DIE_NODE(usb4_1_pcie_port) 0 0 0 3>;
+		};
+	};
+
 	DIE_NODE(usb4_2_mbox): mailbox@f01108000 {
 		compatible = "apple,t6020-asc-mailbox",
 			"apple,asc-mailbox-v4";
@@ -794,11 +950,13 @@
 	DIE_NODE(usb4_2_acio): cio@f01ac0000 {
 		compatible = "apple,t6020-usb4-acio", "apple,t8103-usb4-acio";
 		reg = <0xf 0x01ac0000 0x0 0xc000>,
-			<0xf 0x01080000 0x0 0x20000>;
-		reg-names = "rc", "sram";
+			<0xf 0x01080000 0x0 0x20000>,
+			<0xf 0x01e44000 0x0 0x4000>;
+		reg-names = "rc", "sram", "pcie-adapter";
 
 		mboxes = <&DIE_NODE(usb4_2_mbox)>;
 		resets = <&DIE_NODE(cio_reset) 2>;
+		apple,tunneled-pcie = <&DIE_NODE(usb4_2_pcie_port)>;
 
 		power-domains = <&DIE_NODE(ps_atc2_cio)>,
 				<&DIE_NODE(ps_atc2_cio_pcie)>,
@@ -930,6 +1088,82 @@
 		status = "disabled";
 	};
 
+	/*
+	 * PCIe controller behind the PCIe adapter of the usb4_2 host router.
+	 * Its registers and IOMMU are not set up by the bootloader, and the
+	 * IOMMU cannot be reached before the port's application clock runs.
+	 */
+	DIE_NODE(usb4_2_pcie_dart): iommu@f21008000 {
+		compatible = "apple,t6020-dart", "apple,t8110-dart";
+		reg = <0xf 0x21008000 0x0 0x4000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ DIE_NO 1301 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&DIE_NODE(ps_atc2_pcie)>;
+		clocks = <&DIE_NODE(usb4_2_pcie_port)>;
+		status = "disabled";
+	};
+
+	DIE_NODE(usb4_2_pcie): pcie@f30000000 {
+		compatible = "apple,t6020-usb4-pcie", "apple,t8103-usb4-pcie";
+		device_type = "pci";
+
+		reg = <0xf 0x30000000 0x0 0x4000000>,	/* config */
+			<0xf 0x20000000 0x0 0x8000>,	/* rc and fabric */
+			<0xf 0x21000000 0x0 0x8000>,	/* port0 */
+			<0xf 0x20200000 0x0 0x4000>;	/* debug */
+		reg-names = "config", "rc", "port0", "debug";
+
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ DIE_NO 1300 IRQ_TYPE_LEVEL_HIGH>;
+
+		msi-controller;
+		msi-parent = <&DIE_NODE(usb4_2_pcie)>;
+		msi-ranges = <&aic AIC_IRQ DIE_NO 1897 IRQ_TYPE_EDGE_RISING 32>;
+
+		/* Fixed, so that the internal controllers keep the lowest domains */
+		linux,pci-domain = <(10 + 4 * DIE_NO)>;
+
+		/* Every device behind the tunnel shares one stream of the IOMMU */
+		iommu-map = <0x0 &DIE_NODE(usb4_2_pcie_dart) 1 1>;
+		iommu-map-mask = <0x0>;
+
+		bus-range = <0x00 0x3f>;
+		#address-cells = <3>;
+		#size-cells = <2>;
+		/* The 64-bit window is not translated, so its bus address depends on the die */
+		ranges = <0x43000000 (0x10 + 0x20 * DIE_NO) 0x00000000
+				0x10 0x00000000 0x2 0x00000000>,
+			<0x02000000 0x0 0x00100000 0x12 0x00100000 0x0 0x3ff00000>,
+			<0x42000000 0x0 0x40000000 0x12 0x40000000 0x0 0x40000000>;
+
+		/* ps_atc2_usb_aon, which macOS lists as well, is always on */
+		power-domains = <&DIE_NODE(ps_atc2_pcie)>;
+		resets = <&DIE_NODE(ps_atc2_pcie)>;
+
+		dma-coherent;
+		status = "disabled";
+
+		DIE_NODE(usb4_2_pcie_port): pci@0,0 {
+			device_type = "pci";
+			reg = <0x0 0x0 0x0 0x0 0x0>;
+
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
+
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			#clock-cells = <0>;
+
+			interrupt-map-mask = <0 0 0 7>;
+			interrupt-map = <0 0 0 1 &DIE_NODE(usb4_2_pcie_port) 0 0 0 0>,
+					<0 0 0 2 &DIE_NODE(usb4_2_pcie_port) 0 0 0 1>,
+					<0 0 0 3 &DIE_NODE(usb4_2_pcie_port) 0 0 0 2>,
+					<0 0 0 4 &DIE_NODE(usb4_2_pcie_port) 0 0 0 3>;
+		};
+	};
+
 	DIE_NODE(usb4_3_mbox): mailbox@1301108000 {
 		compatible = "apple,t6020-asc-mailbox",
 			"apple,asc-mailbox-v4";
@@ -947,11 +1181,13 @@
 	DIE_NODE(usb4_3_acio): cio@1301ac0000 {
 		compatible = "apple,t6020-usb4-acio", "apple,t8103-usb4-acio";
 		reg = <0x13 0x01ac0000 0x0 0xc000>,
-			<0x13 0x01080000 0x0 0x20000>;
-		reg-names = "rc", "sram";
+			<0x13 0x01080000 0x0 0x20000>,
+			<0x13 0x01e44000 0x0 0x4000>;
+		reg-names = "rc", "sram", "pcie-adapter";
 
 		mboxes = <&DIE_NODE(usb4_3_mbox)>;
 		resets = <&DIE_NODE(cio_reset) 3>;
+		apple,tunneled-pcie = <&DIE_NODE(usb4_3_pcie_port)>;
 
 		power-domains = <&DIE_NODE(ps_atc3_cio)>,
 				<&DIE_NODE(ps_atc3_cio_pcie)>,
@@ -1081,4 +1317,80 @@
 		#mux-control-cells = <1>;
 		power-domains = <&DIE_NODE(ps_atc3_usb)>;
 		status = "disabled";
+	};
+
+	/*
+	 * PCIe controller behind the PCIe adapter of the usb4_3 host router.
+	 * Its registers and IOMMU are not set up by the bootloader, and the
+	 * IOMMU cannot be reached before the port's application clock runs.
+	 */
+	DIE_NODE(usb4_3_pcie_dart): iommu@1321008000 {
+		compatible = "apple,t6020-dart", "apple,t8110-dart";
+		reg = <0x13 0x21008000 0x0 0x4000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ DIE_NO 1319 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&DIE_NODE(ps_atc3_pcie)>;
+		clocks = <&DIE_NODE(usb4_3_pcie_port)>;
+		status = "disabled";
+	};
+
+	DIE_NODE(usb4_3_pcie): pcie@1330000000 {
+		compatible = "apple,t6020-usb4-pcie", "apple,t8103-usb4-pcie";
+		device_type = "pci";
+
+		reg = <0x13 0x30000000 0x0 0x4000000>,	/* config */
+			<0x13 0x20000000 0x0 0x8000>,	/* rc and fabric */
+			<0x13 0x21000000 0x0 0x8000>,	/* port0 */
+			<0x13 0x20200000 0x0 0x4000>;	/* debug */
+		reg-names = "config", "rc", "port0", "debug";
+
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ DIE_NO 1318 IRQ_TYPE_LEVEL_HIGH>;
+
+		msi-controller;
+		msi-parent = <&DIE_NODE(usb4_3_pcie)>;
+		msi-ranges = <&aic AIC_IRQ DIE_NO 1929 IRQ_TYPE_EDGE_RISING 32>;
+
+		/* Fixed, so that the internal controllers keep the lowest domains */
+		linux,pci-domain = <(11 + 4 * DIE_NO)>;
+
+		/* Every device behind the tunnel shares one stream of the IOMMU */
+		iommu-map = <0x0 &DIE_NODE(usb4_3_pcie_dart) 1 1>;
+		iommu-map-mask = <0x0>;
+
+		bus-range = <0x00 0x3f>;
+		#address-cells = <3>;
+		#size-cells = <2>;
+		/* The 64-bit window is not translated, so its bus address depends on the die */
+		ranges = <0x43000000 (0x14 + 0x20 * DIE_NO) 0x00000000
+				0x14 0x00000000 0x2 0x00000000>,
+			<0x02000000 0x0 0x00100000 0x16 0x00100000 0x0 0x3ff00000>,
+			<0x42000000 0x0 0x40000000 0x16 0x40000000 0x0 0x40000000>;
+
+		/* ps_atc3_usb_aon, which macOS lists as well, is always on */
+		power-domains = <&DIE_NODE(ps_atc3_pcie)>;
+		resets = <&DIE_NODE(ps_atc3_pcie)>;
+
+		dma-coherent;
+		status = "disabled";
+
+		DIE_NODE(usb4_3_pcie_port): pci@0,0 {
+			device_type = "pci";
+			reg = <0x0 0x0 0x0 0x0 0x0>;
+
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
+
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			#clock-cells = <0>;
+
+			interrupt-map-mask = <0 0 0 7>;
+			interrupt-map = <0 0 0 1 &DIE_NODE(usb4_3_pcie_port) 0 0 0 0>,
+					<0 0 0 2 &DIE_NODE(usb4_3_pcie_port) 0 0 0 1>,
+					<0 0 0 3 &DIE_NODE(usb4_3_pcie_port) 0 0 0 2>,
+					<0 0 0 4 &DIE_NODE(usb4_3_pcie_port) 0 0 0 3>;
+		};
 	};
